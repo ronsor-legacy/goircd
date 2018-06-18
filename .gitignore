@@ -1,0 +1,7 @@
+goircd
+goircd.exe
+*~
+ircd.conf
+ircd.crt
+ircd.key
+test2.conf
