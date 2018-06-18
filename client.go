@@ -193,6 +193,11 @@ func client(nc net.Conn, issc bool) {
 	quit := ""
 	_, cl.TLS = nc.(*tls.Conn)
 	_ = cl
+	for k, v := range confdata.Spoof {
+		if glob.Glob(k, cl.Nick + "!" + cl.User + "@" + cl.Host) {
+			cl.Host = v.Spoof
+		}
+	}
 	if issc {
 		cl.Server = true
 		cl.Introduce = true

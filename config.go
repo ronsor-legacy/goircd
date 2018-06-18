@@ -28,6 +28,9 @@ type BanBlock struct {
 	Reason string
 	Remote bool
 }
+type SpoofBlock struct {
+	Spoof string
+}
 type Config struct {
 	Server ServerBlock
 	Listen map[string]*ListenBlock
@@ -35,4 +38,5 @@ type Config struct {
 	Oper map[string]*OperBlock
 	Link map[string]*LinkBlock
 	Ban map[string]*BanBlock
+	Spoof map[string]*SpoofBlock
 }
