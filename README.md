@@ -17,15 +17,15 @@ Not yet supported:
 * INVITE
 * Probably other stuff
 
-# getting
+## getting
 
 Use `go get`: `go get git.ronsor.pw/ronsor/goircd`
 
-# test server
+## test server
 
 Connect to hub.ronsor.eu.org, port 6667, or 6697 for TLS
 
-# setup
+## setup
 
 1. copy example.conf to ircd.conf and start reading!
 2. start goircd: ./goircd
