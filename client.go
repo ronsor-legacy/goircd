@@ -265,7 +265,7 @@ func client(nc net.Conn, issc bool, lb *LinkBlock) {
 					break
 				}
 				if !cl.Introduce {
-					if lb.Password != "" {
+					if lb && lb.Password != "" {
 						conn.Encode(M(nil, "PASS", lb.Password))
 					}
 					conn.Encode(M(nil, "PROTOCTL", "NOQUIT", "NICKIP", "NICKv2"))
