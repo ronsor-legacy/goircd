@@ -130,7 +130,7 @@ func (c *Channel) Mode(cl *Client, args ...string) {
 			continue
 		}
 		mys := c.MaxUserStatus(cl)
-		if GetRank(mys) <= 0 {
+		if GetRank(mys) <= 0 && !cl.Remote && !cl.Server {
 			cl.Conn.Encode(M(mypfx(), "482", cl.Nick, c.Name, fmt.Sprintf("Not allowed to set mode '%c'", v)))
 			continue
 		}
@@ -344,7 +344,12 @@ func (c *Channel) SendToAllButOne(cl *Client, m *irc.Message) {
 			continue
 		}
 		some[fmt.Sprintf("%v",c2.Conn)] = struct{}{}
+		opfx := m.Prefix
+		if c2.Remote {
+			m.Prefix = &irc.Prefix{Name:m.Prefix.Name}
+		}
 		c2.Conn.Encode(m)
+		m.Prefix = opfx
 	}
 }
 func (c *Channel) SendToAllButSome(some map[string]struct{}, m *irc.Message) {
@@ -355,6 +360,11 @@ func (c *Channel) SendToAllButSome(some map[string]struct{}, m *irc.Message) {
 		c := t.Val.(*Client)
 		if c.Remote { continue }
 		some[t.Key] = struct{}{}
+		opfx := m.Prefix
+		if c.Remote {
+			m.Prefix = &irc.Prefix{Name:m.Prefix.Name}
+		}
 		c.Conn.Encode(m)
+		m.Prefix = opfx
 	}
 }

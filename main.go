@@ -101,7 +101,7 @@ func main() {
 					log.Println("DEBUG", "Failed to accept():", err)
 					continue
 				}
-				go client(conn,false)
+				go client(conn,false,nil)
 			}
 		} ()
 	}

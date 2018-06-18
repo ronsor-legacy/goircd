@@ -14,6 +14,9 @@ import (
 	"strings"
 	"strconv"
 )
+func TS() string {
+	return fmt.Sprintf("%d", time.Now().Unix())
+}
 type GzipConn struct {
 	*gzip.Reader
 	*gzip.Writer
@@ -83,6 +86,11 @@ func SendToAllServersButOne(cl *Client, m *irc.Message) {
 		if tgt.Remote || !tgt.Server {
 			continue
 		}
+		if m.Prefix != nil {
+			m2 := *m
+			m = &m2
+			m.Prefix = &irc.Prefix{Name:m.Prefix.Name}
+		}
 		tgt.Conn.Encode(m)
 	}
 }
@@ -98,6 +106,7 @@ func FindChannel(s string) *Channel {
 }
 type Client struct {
 	Nick, User, Host, IP string
+	InCommand chan *irc.Message
 	Real string
 	TS int64
 	SNO string
@@ -116,22 +125,22 @@ func ConnectServer(sname, addr string, usetls bool) {
 			log.Println("LINK", "Failed to link server " + sname + ": " + err.Error())
 			return
 		}
-		client(conn,true)
+		client(conn,true,confdata.Link[sname])
 	} else {
 		conn, err := tls.Dial("tcp", addr, tlsconf)
 		if err != nil {
 			log.Println("LINK", "Failed to link server " + sname + ": " + err.Error())
 			return
 		}
-		client(conn,true)
+		client(conn,true,confdata.Link[sname])
 	}
 }
 func (cl2 *Client) Flags() (flags string) {
-	flags = "+"
-	if cl2.Server { flags += "s" }
-	if cl2.Remote { flags += "r" }
+	flags = "+i"
+	if cl2.Server { flags += "S" }
+	if cl2.Remote { flags += "R" }
 	if cl2.Oper { flags += "o" }
-	if cl2.TLS { flags += "S" }
+	if cl2.TLS { flags += "z" }
 	return
 }
 func (c *Client) Prefix() *irc.Prefix {
@@ -172,7 +181,11 @@ func (c *Client) Quit(m string) {
 	c.ID = ""
 }
 func (c *Client) Message(src *Client, cmd, m string) {
-	c.Conn.Encode(M(src.Prefix(), cmd, c.Nick, m))
+	pfx := src.Prefix()
+	if c.Remote {
+		pfx = &irc.Prefix{Name:pfx.Name}
+	}
+	c.Conn.Encode(M(pfx, cmd, c.Nick, m))
 }
 func ClientByNick(s string) *Client {
 	for t := range clients.IterBuffered() {
@@ -183,12 +196,12 @@ func ClientByNick(s string) *Client {
 	}
 	return nil
 }
-func client(nc net.Conn, issc bool) {
+func client(nc net.Conn, issc bool, lb *LinkBlock) {
 	ISUPPORT := []string{"", "GZIP", "TLS=12", "NICKLEN=31", "PREFIX=(qaohv)~&@%+", "CHARSET=utf8", "TOPICLEN=307", "NETWORK="+confdata.Server.Network}
 	ip, _, _ := net.SplitHostPort(nc.RemoteAddr().String())
 	host := ip
 	conn := irc.NewConn(nc)
-	cl := &Client{ID: uniqid(), Host: host, IP: ip, Conn: conn, RawConn: nc, ServerName: confdata.Server.Name, TS: time.Now().Unix()}
+	cl := &Client{ID: uniqid(), Host: host, IP: ip, Conn: conn, RawConn: nc, ServerName: confdata.Server.Name, TS: time.Now().Unix(), InCommand: make(chan *irc.Message, 32)}
 	clients.Set(cl.ID, cl)
 	quit := ""
 	_, cl.TLS = nc.(*tls.Conn)
@@ -218,10 +231,13 @@ func client(nc net.Conn, issc bool) {
 			conn = irc.NewConn(rw)
 			cl.Conn = conn
 		}*/
+		conn.Encode(M(nil, "PASS", lb.Password))
+		conn.Encode(M(nil, "PROTOCTL", "NOQUIT", "NICKIP", "NICKv2"))
 		conn.Encode(M(nil, "SERVER", confdata.Server.Name, "1", confdata.Server.Description))
 	}
 	for {
 		msg, err := conn.Decode()
+		if cl.Server { log.Println("SDEBUG", msg) }
 		if err != nil {
 			quit = err.Error()
 			break
@@ -249,6 +265,10 @@ func client(nc net.Conn, issc bool) {
 					break
 				}
 				if !cl.Introduce {
+					if lb.Password != "" {
+						conn.Encode(M(nil, "PASS", lb.Password))
+					}
+					conn.Encode(M(nil, "PROTOCTL", "NOQUIT", "NICKIP", "NICKv2"))
 					conn.Encode(M(nil, "SERVER", confdata.Server.Name, "1", confdata.Server.Description))
 					cl.Introduce = true
 				}
@@ -258,35 +278,40 @@ func client(nc net.Conn, issc bool) {
 				//cl.ServerName = cl.Nick
 				cl.Server = true
 				ISUPPORT[0] = cl.Nick
-				conn.Encode(M(nil, "005", ISUPPORT...))
 				for t := range clients.IterBuffered() {
 					cl2 := t.Val.(*Client)
 					if cl2.ID == cl.ID { continue }
 					flags := cl2.Flags()
-					conn.Encode(M(nil, "CLIENT", cl2.Nick, cl2.User, cl2.Host, fmt.Sprintf("%d", cl2.TS), cl2.ServerName, flags, cl2.Real))
+
+					//conn.Encode(M(nil, "CLIENT", cl2.Nick, cl2.User, cl2.Host, fmt.Sprintf("%d", cl2.TS), cl2.ServerName, flags, cl2.Real))
+					if !cl2.Server {
+					conn.Encode(M(nil, "NICK", cl2.Nick, "1", fmt.Sprintf("%d", cl2.TS), cl2.User, cl2.Host, cl2.ServerName, fmt.Sprintf("%d", cl2.TS), flags, "*", "*", cl2.Real))
+					} else {
+					conn.Encode(M(mypfx(), "SERVER", cl2.Nick, "2", cl2.Real))
+					}
 					for _, v := range cl2.Channels {
 						conn.Encode(M(cl2.Prefix(), "JOIN", v.Name))
 					}
 				}
 				for t := range channels.IterBuffered() {
 					ch := t.Val.(*Channel)
-					conn.Encode(M(mypfx(), "TOPIC", ch.Name, ch.Topic))
-					conn.Encode(M(mypfx(), "MODE", ch.Name, "+" + ch.ModeFlags))
+					conn.Encode(M(mypfx(), "TOPIC", ch.Name, ch.Topic, TS()))
+					conn.Encode(M(mypfx(), "MODE", ch.Name, "+" + ch.ModeFlags, TS()))
 					for t2 := range ch.Status.IterBuffered() {
 						for _, v := range t2.Val.([]byte) {
 							xcl, _ := ch.Users.Get(t2.Key)
 							if xcl == nil { continue }
 							zcl := xcl.(*Client)
 							if v > 0 {
-								conn.Encode(M(mypfx(), "MODE", ch.Name, "+" + string(v), zcl.Nick))
+								conn.Encode(M(mypfx(), "MODE", ch.Name, "+" + string(v), zcl.Nick, TS()))
 							}
 						}
 					}
 					for _, b := range ch.Bans {
-						conn.Encode(M(mypfx(), "MODE", ch.Name, "+b", b))
+						conn.Encode(M(mypfx(), "MODE", ch.Name, "+b", b, TS()))
 					}
 					for _, b := range ch.Excepts {
-						conn.Encode(M(mypfx(), "MODE", ch.Name, "+e", b))
+						conn.Encode(M(mypfx(), "MODE", ch.Name, "+e", b, TS()))
 					}
 				}
 				log.Println("LINK", "New server linked:", cl.Nick)
@@ -322,7 +347,8 @@ func client(nc net.Conn, issc bool) {
 						goto break2
 					}
 				}
-				SendToAllServersButOne(nil, M(nil, "CLIENT", cl.Nick, cl.User, cl.Host, fmt.Sprintf("%d", cl.TS), cl.ServerName, cl.Flags(), cl.Real))
+				cl2 := cl
+				SendToAllServersButOne(nil, M(nil, "NICK", cl2.Nick, "1", fmt.Sprintf("%d", cl2.TS), cl2.User, cl2.Host, cl2.ServerName, fmt.Sprintf("%d", cl2.TS), cl2.Flags(), "*", "*", cl2.Real))
 				log.Println("CLIENT", "Client connecting:", cl.Nick + "!" + cl.User +"@" + cl.Host)
 				conn.Encode(M(mypfx(), "001", cl.Nick, "Welcome to IRC!"))
 				conn.Encode(M(mypfx(), "002", cl.Nick, "Your host is " + confdata.Server.Name + " running version 1.0"))
@@ -357,14 +383,49 @@ func client(nc net.Conn, issc bool) {
 				}
 				conn.Encode(M(mypfx(), "323", cl.Nick, "End of RPL_LIST"))
 			break
-			case "CLIENT":
-				if len(msg.Params) < 7 {
+			case "SERVER":
+				newcl := &Client{ID: uniqid(), Nick: msg.Params[0], User: msg.Params[0], Host: msg.Params[0], TS: time.Now().Unix(), ServerName: curcl.Nick,
+					Real: msg.Params[2], TLS: false, Oper: false, Server: true, Remote: true,
+					RawConn: cl.RawConn, Conn: cl.Conn, InCommand: make(chan *irc.Message, 32)}
+				oldcl := ClientByNick(newcl.Nick)
+				if oldcl != nil {
+					quit = "Can't reintroduce server: " + newcl.Nick
+					goto break2
+				}
+				SendToAllServersButOne(cl, msg)
+				clients.Set(newcl.ID, newcl)
+
+			break
+			case "NICK":
+				if cl.Server { goto CASE_NICK_SERVER }
+				if true {
+				if len(msg.Params) != 1 {
+					conn.Encode(NEED_PARAMS)
+					break
+				}
+				oldn := ClientByNick(msg.Params[0])
+				if oldn != nil {
+					conn.Encode(M(mypfx(),"433",curcl.Nick,msg.Params[0],"Nickname in use"))
+					break
+				}
+				some := map[string]struct{}{}
+				for _, v := range curcl.Channels {
+					v.Nick(curcl, some, msg.Params[0])
+				}
+				SendToAllServersButOne(nil, M(curcl.Prefix(), "NICK", msg.Params[0]))
+				curcl.Nick = msg.Params[0]
+				if len(msg.Params) < 10 {
 					quit = "Protocol violation"
 					goto break2
 				}
-				newcl := &Client{ID: uniqid(), Nick: msg.Params[0], User: msg.Params[1], Host: msg.Params[2], TS: strconvOr(msg.Params[3], 0), ServerName: msg.Params[4],
-						Real: msg.Params[6], TLS: strings.Contains(msg.Params[5], "S"), Oper: strings.Contains(msg.Params[5], "o"), Server: strings.Contains(msg.Params[5], "s"), Remote: true,
-						RawConn: cl.RawConn, Conn: cl.Conn}
+				}
+				break
+				CASE_NICK_SERVER:
+        // NICK burnout 1 1527705211 burnout forever.nerdforlife.net piano.thelandorg.com 1527705211 +iowrxzt 192.168.0.1 RaTAkw== :burnout
+        //  -1    0     1  2          3           4                         5               6           7         8       9        10
+				newcl := &Client{ID: uniqid(), Nick: msg.Params[0], User: msg.Params[3], Host: msg.Params[4], TS: strconvOr(msg.Params[2], 0), ServerName: msg.Params[5],
+						Real: msg.Params[10], TLS: strings.Contains(msg.Params[7], "z"), Oper: strings.Contains(msg.Params[7], "o"), Server: false, Remote: true,
+						RawConn: cl.RawConn, Conn: cl.Conn, InCommand: make(chan *irc.Message, 32)}
 				// Working with nick collisions
 				oldcl := ClientByNick(newcl.Nick)
 				if oldcl != nil && oldcl.TS > newcl.TS {
@@ -483,23 +544,6 @@ func client(nc net.Conn, issc bool) {
 				}
 				conn.Encode(M(mypfx(), "365", cl.Nick, "*", "End of RPL_LINKS"))
 			break
-			case "NICK":
-				if len(msg.Params) != 1 {
-					conn.Encode(NEED_PARAMS)
-					break
-				}
-				oldn := ClientByNick(msg.Params[0])
-				if oldn != nil {
-					conn.Encode(M(mypfx(),"433",curcl.Nick,msg.Params[0],"Nickname in use"))
-					break
-				}
-				some := map[string]struct{}{}
-				for _, v := range curcl.Channels {
-					v.Nick(curcl, some, msg.Params[0])
-				}
-				SendToAllServersButOne(nil, M(curcl.Prefix(), "NICK", msg.Params[0]))
-				curcl.Nick = msg.Params[0]
-			break
 			case "MODE":
 				if len(msg.Params) < 1 {
 					conn.Encode(NEED_PARAMS)
@@ -578,11 +622,11 @@ func client(nc net.Conn, issc bool) {
 				goto break2
 			break
 			case "MOTD":
-				conn.Encode(M(mypfx(), "375", cl.Nick, "- Message of the day"))
+				conn.Encode(M(mypfx(), "375", curcl.Nick, "- Message of the day"))
 				for _, v := range getmotd() {
-					conn.Encode(M(mypfx(), "372", cl.Nick, "- " + v))
+					conn.Encode(M(mypfx(), "372", curcl.Nick, "- " + v))
 				}
-				conn.Encode(M(mypfx(), "376", cl.Nick, "End of /MOTD reply"))
+				conn.Encode(M(mypfx(), "376", curcl.Nick, "End of /MOTD reply"))
 			break
 			case "WHOIS":
 				if len(msg.Params) < 1 {
@@ -598,20 +642,20 @@ func client(nc net.Conn, issc bool) {
 				if clnt.ServerName == confdata.Server.Name {
 					sinfo = confdata.Server.Description
 				}
-				conn.Encode(M(mypfx(), "311", cl.Nick, clnt.Nick, clnt.User, clnt.Host, "*", clnt.Real))
+				conn.Encode(M(mypfx(), "311", curcl.Nick, clnt.Nick, clnt.User, clnt.Host, "*", clnt.Real))
 				chans := []string{}
 				for _, v := range clnt.Channels {
 					chans = append(chans, fmt.Sprintf("%c%s", v.MaxUserStatus(clnt), v.Name))
 				}
-				conn.Encode(M(mypfx(), "319", cl.Nick, clnt.Nick, strings.Join(chans, " ")))
+				conn.Encode(M(mypfx(), "319", curcl.Nick, clnt.Nick, strings.Join(chans, " ")))
 				if clnt.Oper {
-					conn.Encode(M(mypfx(), "313", cl.Nick, clnt.Nick, "is an IRC Operator"))
+					conn.Encode(M(mypfx(), "313", curcl.Nick, clnt.Nick, "is an IRC Operator"))
 				}
 				if clnt.TLS {
-					conn.Encode(M(mypfx(), "320", cl.Nick, clnt.Nick, "is using a secure connection"))
+					conn.Encode(M(mypfx(), "320", curcl.Nick, clnt.Nick, "is using a secure connection"))
 				}
-				conn.Encode(M(mypfx(), "312", cl.Nick, clnt.Nick, clnt.ServerName, sinfo))
-				conn.Encode(M(mypfx(), "318", cl.Nick, clnt.Nick, "End of RPL_WHOIS"))
+				conn.Encode(M(mypfx(), "312", curcl.Nick, clnt.Nick, clnt.ServerName, sinfo))
+				conn.Encode(M(mypfx(), "318", curcl.Nick, clnt.Nick, "End of RPL_WHOIS"))
 			break
 			case "NOTICE":
 			case "PRIVMSG":
@@ -636,6 +680,9 @@ func client(nc net.Conn, issc bool) {
 			break
 			case "TOPIC":
 				if len(msg.Params) < 1 { break }
+				if len(msg.Params) == 4 {
+					msg.Params = []string{msg.Params[0], msg.Params[3]}
+				}
 				if msg.Params[0][0] != '#' { break }
 				x := FindTarget(msg.Params[0])
 				if x == nil {
@@ -665,7 +712,7 @@ func client(nc net.Conn, issc bool) {
 					err := c2.Join(curcl)
 					if isnew && !cl.Server {
 						c2.Status.Set(curcl.ID,[]byte{'q',0,'o',0,0})
-						SendToAllServersButOne(nil, M(mypfx(),"MODE",c2.Name,"+qo",curcl.Nick,curcl.Nick))
+						SendToAllServersButOne(nil, M(mypfx(),"MODE",c2.Name,"+qo",curcl.Nick,curcl.Nick,TS()))
 					}
 					if err != nil {
 						conn.Encode(M(mypfx(),"474",cl.Nick,c,err.Error()))

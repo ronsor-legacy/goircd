@@ -23,6 +23,7 @@ type LinkBlock struct {
 	Address string
 	TLS bool
 	Auto bool
+	Password string
 }
 type BanBlock struct {
 	Reason string
