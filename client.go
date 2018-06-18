@@ -237,7 +237,6 @@ func client(nc net.Conn, issc bool, lb *LinkBlock) {
 	}
 	for {
 		msg, err := conn.Decode()
-		if cl.Server { log.Println("SDEBUG", msg) }
 		if err != nil {
 			quit = err.Error()
 			break
