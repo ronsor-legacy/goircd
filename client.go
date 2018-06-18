@@ -402,6 +402,10 @@ func client(nc net.Conn, issc bool) {
 				}
 				cl2.Kill(km)
 			break
+			case "REHASH":
+				if !cl.Oper { break }
+				readconf()
+			break
 			case "OPER":
 				if curcl.Remote {
 					curcl.Oper = true
